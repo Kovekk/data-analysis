@@ -1,0 +1,233 @@
+---
+title: "Spectral Analysis"
+date: "`r Sys.Date()`"
+output: html_notebook
+---
+
+# Packages
+```{r,message=FALSE}
+library(tidyverse)
+library(cowplot)
+library(ggridges)
+library(buildmer)
+library(car)
+library(doParallel)
+library(emmeans)
+library(see)
+library(ggpubr)
+library(ggdist)
+library(interactions)
+```
+
+
+
+# Get data
+```{r}
+#data_responses <- readRDS("./data/data_responses.RDS")
+data_responses <- read.csv("./synthetic_data_responses.csv")
+n <- length(unique(data_responses$ParticipantID))
+n
+```
+
+
+# Check correlation between AQ and BAPQ
+```{r}
+AQBAPQ <- data_responses %>%
+  group_by(ParticipantID) %>%
+  dplyr::summarize(AQ_Total = mean(AQ_Total), BAPQ_Total = mean(BAPQ_Total)) %>%
+  ggscatter(x = "AQ_Total", y = "BAPQ_Total", 
+                    add = "reg.line", conf.int = TRUE, 
+                    cor.coef = TRUE, cor.method = "pearson",
+                    xlab = "AQ total score", ylab = "BAPQ total score") +
+  labs(title = "figure 1") +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    plot.background = element_rect(color = "black", fill = NA, linewidth = 1.5),
+    plot.margin = margin(t = 15, r = 20, b = 10, l = 10))
+
+AQBAPQ
+```
+
+
+
+# Analyze responses to question about who is being referred to
+```{r}
+reverse_code <- c(5,4,3,2,1)
+data_who <- data_responses %>%
+  filter(Condition == 'a' | Condition == 'b' | Condition == 'c' | Condition == 'd' | Condition == 'e' | Condition == 'f') %>%
+  filter(Question == 'Q1') %>%
+  mutate(SubjResponse = as.numeric(ifelse(Bias == 'subject' & Q1FocusedSide == 'right', Response,
+                               ifelse(Bias == 'object' & Q1FocusedSide == 'left', Response,
+                                      ifelse(Bias == 'subject' & Q1FocusedSide == 'left', reverse_code[as.numeric(Response)],
+                                             ifelse(Bias == 'object' & Q1FocusedSide == 'right', reverse_code[as.numeric(Response)], NA)))))) %>%
+  mutate(SubjResponse_z.score = ave(SubjResponse, ParticipantID, FUN=scale)
+
+)
+```
+
+## Plot
+Colorblind friendly palate
+```{r}
+cbPalette <- okabeito_colors()
+
+# OR
+# cbPalette <- c("#0072B2", "#D55E00", "#999999", "#E69F00","#F0E442","#56B4E9","#009E73","#CC79A7","#000000")
+```
+
+```{r}
+data_who_summary <- data_who %>%
+  group_by(Form, ParticipantID, Bias) %>%
+  dplyr::summarize(AvgPreference = mean(SubjResponse_z.score))
+```
+
+```{r}
+who_plot <- data_who %>%
+  ggplot( aes(x=factor(Bias, levels = c("subject","object")), 
+              y=SubjResponse_z.score, 
+              fill=factor(Form, levels = c("PRO", "subject pronoun", "object pronoun")))) +
+  stat_halfeye(justification = -0.3, adjust = 1.5, .width = 0, 
+               point_colour = NA, position = position_dodge(.75), normalize = "all",
+               scale = 0.5) +
+  geom_boxplot(width = 0.225, position = position_dodge(.75), outlier.shape = NA) +
+  # geom_point(data = data_who_summary, aes(x = Form, y = AvgPreference, fill=Bias),
+  #            position = position_dodge(width = 0.75), size = 2) +
+  # scale_fill_viridis(discrete = TRUE) +
+  scale_fill_okabeito(labels = c("PRO", bquote("pron"[subj]*""), bquote("pron"[obj]*""))) +
+  theme_cowplot() +
+  # theme_pubclean() +
+  # theme_pubr() +
+  theme(legend.position="right",
+    plot.title = element_text(hjust = 0.5),
+    plot.background = element_rect(color = "black", fill = NA, linewidth = 1.5),
+    plot.margin = margin(t = 15, r = 20, b = 10, l = 10)) +
+  # theme(legend.position="bottom") +
+  # ggtitle("(a) Preference for coreference with subject") +
+  xlab("") +
+  #only run this when grouping by cluster, run w/o for all data ungrouped# facet_wrap("Cluster.x") +
+  scale_x_discrete(labels = c("subject bias", "object bias")) +
+  ylab(str_wrap("Preference for coreference with subject", width=30)) +
+  # ylim(-1.75,1.75) + 
+  labs(fill = "Form", title = "Figure 2")  # Specify the desired legend title
+
+ggsave(sprintf("SpectralAnalysis-who_n%d_%s.pdf", n, format(Sys.Date(), "%Y-%m-%d")), plot = who_plot, width = 7, height = 3, units = "in", dpi = 300)
+
+who_plot
+
+```
+
+Split by group
+```{r}
+data_who <- data_who %>%
+  mutate(AQ_Group = if_else(AQ_Total >= 26, 'High', 'Low', NA))
+```
+
+```{r}
+facet_labels <- c("subject" = "Subject bias", "object" = "Object bias")
+
+who_plot_group <- data_who %>%
+  ggplot(aes(x = factor(AQ_Group), 
+             y = SubjResponse_z.score, 
+             fill = factor(Form, levels = c("PRO", "subject pronoun", "object pronoun")))) +
+  stat_halfeye(justification = -0.3, adjust = 1.5, .width = 0, 
+               point_colour = NA, position = position_dodge(.75), normalize = "all",
+               scale = 0.5) +
+  geom_boxplot(width = 0.225, position = position_dodge(.75), outlier.shape = NA) +
+  scale_fill_okabeito(labels = c("PRO", bquote("pron"[subj]*""), bquote("pron"[obj]*""))) +
+  theme_cowplot() +
+  theme(legend.position = "right",
+    plot.title = element_text(hjust = 0.5),
+    plot.background = element_rect(color = "black", fill = NA, linewidth = 1.5),
+    plot.margin = margin(t = 15, r = 20, b = 10, l = 10)) +
+  xlab("") +
+  ylab(str_wrap("Preference for coreference with subject", width = 30)) +
+  facet_grid(factor(Bias, levels = c("subject", "object")) ~ ., labeller = as_labeller(facet_labels)) +
+  labs(fill = "Form", title = "Figure 3") + 
+  scale_x_discrete(labels = c("High AQ group", "Low AQ group"))
+
+
+ggsave(sprintf("SpectralAnalysis-who_group-n%d_%s.png", n, format(Sys.Date(), "%Y-%m-%d")), plot = who_plot_group, width = 7, height = 3, units = "in", dpi = 600)
+
+who_plot_group
+
+```
+
+
+
+## Stats
+```{r}
+data_who$Form <- factor(data_who$Form) %>%
+  fct_relevel("subject pronoun","object pronoun","PRO")
+contrasts(data_who$Form) <- contr.Sum(levels(data_who$Form))
+contrasts(data_who$Form)
+
+data_who$Bias <- factor(data_who$Bias)
+contrasts(data_who$Bias) <- contr.Sum(levels(data_who$Bias))
+contrasts(data_who$Bias)
+
+
+data_who$AQ_Total_Raw <- data_who$AQ_Total
+data_who$AQ_Total <- as.numeric(scale(data_who$AQ_Total))
+data_who$AQ_Log <- log(data_who$AQ_Total_Raw)
+```
+
+```{r}
+m_who <- buildmer(SubjResponse_z.score ~ Form*Bias*AQ_Log + 
+                (1+Form*Bias|ParticipantID) +
+                (1+Form*Bias|Item),
+              data=data_who, buildmerControl=list(direction='order', cl=detectCores()-1))
+
+m_who_no_log <- buildmer(SubjResponse_z.score ~ Form*Bias*AQ_Total + 
+                (1+Form*Bias|ParticipantID) +
+                (1+Form*Bias|Item),
+              data=data_who, buildmerControl=list(direction='order', cl=detectCores()-1))
+```
+
+```{r}
+
+#summary of the logarithmic model
+summary(m_who)
+#summary(m_who_no_log)
+# anova(m)
+# anova(m_who@model)
+```
+
+```{r}
+
+#summary of the linear model
+summary(m_who_no_log)
+
+```
+
+
+
+
+
+##FOR THESE COMPARISONS AND PLOTS, RUN THEM WITH log(AQ_Total) too!!!
+# CHANGE THE X LABEL DUE TO CHANGE WITH LOG
+```{r}
+
+#pairwise comparisons for logarithmic model
+
+emmeans(m_who@model, list(
+  pairwise ~ Bias|Form,
+  pairwise ~ Form|Bias
+  ), adjust="tukey")
+
+
+```
+
+
+```{r}
+
+#pairwise comparisons for linear model
+
+emmeans(m_who_no_log@model, list(
+  pairwise ~ Bias|Form,
+  pairwise ~ Form|Bias
+  ), adjust="tukey")
+
+```
+
+
+```{r}
+```

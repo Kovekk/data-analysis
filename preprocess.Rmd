@@ -1,0 +1,340 @@
+---
+title: "Spectral Analysis"
+date: "`r Sys.Date()`"
+output: html_notebook
+---
+
+# Packages
+```{r,message=FALSE}
+library(tidyverse)
+library(cowplot)
+library(ggridges)
+library(buildmer)
+library(car)
+library(doParallel)
+library(emmeans)
+library(see)
+library(ggpubr)
+library(ggdist)
+library(interactions)
+```
+
+# Function to read in data from pcibex
+```{r}
+read.pcibex <- function(filepath, auto.colnames=TRUE, fun.col=function(col,cols){cols[cols==col]<-paste(col,"Ibex",sep=".");return(cols)}) {
+  n.cols <- max(count.fields(filepath,sep=",",quote=NULL),na.rm=TRUE)
+  if (auto.colnames){
+    cols <- c()
+    con <- file(filepath, "r")
+    while ( TRUE ) {
+      line <- readLines(con, n = 1, warn=FALSE)
+      if ( length(line) == 0) {
+        break
+      }
+      m <- regmatches(line,regexec("^# (\\d+)\\. (.+)\\.$",line))[[1]]
+      if (length(m) == 3) {
+        index <- as.numeric(m[2])
+        value <- m[3]
+        if (index < length(cols)){
+          cols <- c()
+        }
+        if (is.function(fun.col)){
+          cols <- fun.col(value,cols)
+        }
+        cols[index] <- value
+        if (index == n.cols){
+          break
+        }
+      }
+    }
+    close(con)
+    return(read.csv(filepath, comment.char="#", header=FALSE, col.names=cols))
+  }
+  else{
+    return(read.csv(filepath, comment.char="#", header=FALSE, col.names=seq(1:n.cols)))
+  }
+}
+```
+
+## Additional helper functions
+```{r}
+get.ci <- function(v) {
+  return(t.test(v)$conf.int);
+}
+
+error.bar <- function(x, upper, lower=upper, length=0.03, lwd=2,...){
+  arrows(x,upper, x, lower, angle=90, code=3, length=length, lwd=lwd, ...)
+}
+
+compute.stats <- function(data) {
+  means <- tapply(data$RT, data$Region [drop=TRUE], mean);
+  mins <- tapply(data$RT, data$Region [drop=TRUE], min);
+  maxs <- tapply(data$RT, data$Region [drop=TRUE], max);
+  stds <- sqrt(tapply(data$RT, data$Region [drop=TRUE], var));
+  rtns <- sqrt(tapply(data$RT, data$Region [drop=TRUE], length));
+  sems <- stds/rtns;
+  seml <- means - sems;
+  semu <- means + sems;
+  cis <- tapply(data$RT, data$Region [drop=TRUE], get.ci)
+  cil <- sapply(cis, function(v) {v[1]});
+  ciu <- sapply(cis, function(v) {v[2]});
+  stats <- data.frame(means, stds, sems, mins, maxs, cil, ciu, seml, semu);
+  names(stats) <- c("Mean", "S.D.", "SEM","Min", "Max", "95%tlow", "95%tupp", "-SEM", "+SEM");
+  return(stats);
+}
+
+```
+
+
+# Get PCIbex data
+```{r}
+filenames <- list.files(path = "./pcibex_data")
+
+cl <- makeCluster(detectCores()-1)  
+registerDoParallel(cl)  
+
+data_full <- foreach(k=1:length(filenames), .combine=rbind, 
+                     .packages = 'tidyverse') %dopar% {
+  current_file <- paste0("./pcibex_data/",filenames[k])
+  current_data <- read.pcibex(current_file) %>%
+    rename(Participant = MD5.hash.of.participant.s.IP.address,
+           RT = Reading.time,
+           Question = PennElementName,
+           Response = Value)
+  
+  current_data
+}
+
+stopCluster(cl)  
+```
+
+
+Get Spectral analysis data
+#manually take out extra rows in the spreadsheet and rename columns for the ones listed in this block
+```{r}
+spectral <- read.csv("./qualtrics_data_adjusted.csv", header=TRUE) %>%
+  select(unique_ID, AQ_Total, BAPQ_Total, IUS12_Total, BAPQ_Aloof, 
+         BAPQ_Pragmatic_Language, BAPQ_Rigid, AQ_Social_Skill, AQ_Attention_Switching,
+         AQ_Attention_to_Detail, AQ_Communication, AQ_Imagination) %>%
+  rename(ParticipantID = unique_ID) %>%
+  filter(AQ_Total != "") %>%
+  filter(AQ_Total != "AQ_Total")
+
+spectral_questions <- read.csv("./qualtrics_data_adjusted.csv", header=TRUE) %>%
+  select(unique_ID, AQ_Total, Q16_1, Q17_1, Q18_1, Q19_1, Q20_1, Q21_1, Q22_1, Q23_1, Q24_1, Q25_1, Q26_1, Q27_1, Q28_1, Q29_1, Q30_1, Q31_1, Q32_1, Q33_1, Q34_1, Q35_1, Q36_1, Q37_1, Q38_1, Q40_1, Q41_1, Q42_1, Q43_1, Q44_1, Q45_1, Q46_1, Q47_1, Q48_1, Q49_1, Q50_1, Q51_1, Q52_1, Q53_1, Q54_1, Q55_1, Q56_1, Q57_1, Q58_1, Q59_1, Q60_1, Q61_1, Q62_1, Q63_1, Q64_1, Q65_1, Q68_1) %>%
+  rename(ParticipantID = unique_ID) %>%
+  filter(AQ_Total != "") %>%
+  filter(AQ_Total != "AQ_Total") %>%
+  filter (apply(across(everything(), ~ . == ""), 1, any))
+
+write.csv(spectral_questions, "./data/qualtrics_incomplete.csv")
+```
+
+
+Remove rows with duplicate unique IDs.
+#We actually may want to keep some of these. Sometimes a participant started the spectral analysis task but exited out and then restarted/completed the task later. So it would be good to keep the duplicate that is complete and filter out the incomplete one (for cases like that)
+
+#for the second filter, look in the spreadsheet to see if it's listed as NA or null or something for people who don't have a total score
+
+```{r}
+# Get all duplicates in spectral analysis
+unfinished_duplicates <- spectral %>% 
+  group_by(ParticipantID) %>% 
+  filter(n() > 1) %>% 
+  ungroup()
+
+write.csv(unfinished_duplicates, "./data/spectral duplicates")
+
+spectral <- spectral %>%
+  filter(!ParticipantID %in% spectral_questions$ParticipantID) %>%
+  filter(!ParticipantID %in% unfinished_duplicates$ParticipantID) %>%
+  group_by(ParticipantID) %>% 
+  filter(n() == 1) %>% 
+  ungroup() 
+```
+
+
+### Attention check items and comprehension questions
+```{r}
+data_response_stuff <- data_full %>%
+  filter(Label=="phase_three_experiment",Parameter=="Choice")
+
+attention <- data_response_stuff %>%
+  filter(Condition == 'CheatCheck') %>%
+  mutate(Correct = ifelse(Response == FocusedQ, 1, 0)) %>%
+  group_by(ParticipantID) %>%
+  summarise(MeanCorrect = mean(Correct))
+
+
+comprehension <- data_response_stuff %>% 
+  filter((Condition == 'SemAnom' | Condition == 'SemNonanom' | Condition == 'Filler') & Question == 'Q1') %>%
+  mutate(Correct = ifelse((Response == '1' & Q1FocusedSide == 'left') | (Response == '5' & Q1FocusedSide == 'right'),1,0)) %>%
+  group_by(ParticipantID) %>%
+  summarise(MeanCorrect = mean(Correct))
+
+combined <- rbind(comprehension,attention) %>%
+  group_by(ParticipantID) %>%
+  summarise(MeanCorrect = mean(MeanCorrect))
+
+mean(combined$MeanCorrect)
+sd(combined$MeanCorrect)
+range(combined$MeanCorrect)
+```
+
+
+# filtering out the participants with an accuracy score less than 70%
+# doing the filtering to both the pcibex data and the qualtrics data.
+# This is making sure all data to be filtered out is gone before the clustering process.
+```{r}
+low_accuracy <- combined %>%
+  filter(MeanCorrect <.7)
+
+data_full <- data_full %>%
+  filter(! ParticipantID %in% low_accuracy$ParticipantID)
+
+spectral <- spectral %>%
+  filter(! ParticipantID %in% low_accuracy$ParticipantID)
+```
+
+
+Participant data
+```{r}
+participant_data <- data_full %>%
+  filter(Question=='background')
+```
+
+
+#Remove data from data_full that does not match a uniqueID in spectral
+```{r}
+unmatched_pcibex_data <- data_full %>%
+  filter(!ParticipantID %in% spectral$ParticipantID)
+write.csv(unmatched_pcibex_data, "./data/unmatched_pcibex_data.csv")
+
+data_full <- data_full %>%
+  filter(ParticipantID %in% spectral$ParticipantID)
+
+spectral <- spectral %>%
+  filter(ParticipantID %in% data_full$ParticipantID)
+```
+
+write out a .csv file with the way the data has been filtered up to this point. Import that .csv into the k-means cluster script and run it. Then run the rest of this script.
+
+```{r}
+write.csv(spectral,"./data/spectral_analysis_filtered.csv")
+
+```
+
+
+```{r}
+```
+
+
+
+### PERFORM K-MEANS BEFORE MOVING TO THE FOLLOWING CODE BLOCKS.###
+
+
+
+#Get clusters
+```{r}
+clusters <- read.csv("./data/participant_clusters.csv")
+```
+
+
+```{r}
+data_full <- data_full %>%
+  left_join(spectral, by = "ParticipantID") %>%
+  left_join(clusters, by = "ParticipantID")
+```
+
+
+```{r}
+data_RT <- data_full %>%
+  filter(Label=="phase_three_experiment", Question=="DashedSentence", CriticalWordLocation !='x') %>%
+  rename(Word = Parameter) %>%
+  mutate(Word = as.numeric(Word), RT = as.numeric(RT)) %>%
+  mutate(VerbPosition=ifelse(Condition %in% c('a','b','c','d','e','f'),as.numeric(CriticalWordLocation),'NA'))%>%
+  mutate(PronPosition=ifelse(Form %in% c('subject pronoun','object pronoun'), as.numeric(VerbPosition)-1, 'NA')) %>%
+  mutate(Region = ifelse(Word==PronPosition,"pron",
+                         ifelse(Word==VerbPosition,"verb",
+                                ifelse(Word==as.numeric(VerbPosition)+1,"post1",
+                                       ifelse(Word==as.numeric(VerbPosition)+2,"post2",
+                                              ifelse(Word==as.numeric(VerbPosition)+3,"post3",
+                                              "NA"))))))
+  
+
+data_responses <- data_full %>%
+  filter(Label=="phase_three_experiment",Parameter=="Choice")
+```
+
+## Export participant data
+```{r}
+credit_info <- participant_data %>%
+  select(Participant,Parameter,Response) %>%
+  filter(Parameter == 'name' | Parameter == 'course' ) %>%
+  distinct() %>%
+  pivot_wider(names_from = 'Parameter', values_from = 'Response') %>%
+  select(name,course)
+
+credit_info <- apply(credit_info,2,as.character)
+
+write.csv(credit_info, './data/credit_list.csv')
+
+subj_data <- participant_data %>%
+  select(Participant,ParticipantID,Parameter,Response) %>%
+  filter(Parameter != 'name' & Parameter != 'course' & Parameter != 'instructor') %>%
+  distinct() %>%
+  pivot_wider(names_from = 'Parameter', values_from = 'Response') %>%
+  select_all(~make.names(.)) %>%
+  select(Participant,ParticipantID,age,education,other.languages, where.were.you.born) #native.language,gender
+```
+
+## Remove non-native speakers and other disqualified participants
+```{r}
+disqualified <- subj_data %>%
+  filter(Participant %in% c(''))
+
+data_RT <- data_RT %>%
+  filter(! Participant %in% disqualified$Participant)
+
+data_responses <- data_responses %>%
+  filter(! Participant %in% disqualified$Participant)
+
+subj_data <- subj_data %>%
+  filter(! Participant %in% disqualified$Participant)
+```
+
+## Get subject data
+Number
+```{r}
+# n <- length(subj_data$Participant)
+n <- length(unique(data_RT$ParticipantID))
+n
+```
+
+
+Mean age
+```{r}
+mean(as.numeric(unlist(subj_data$age)), na.rm = T)
+sd(as.numeric(unlist(subj_data$age)), na.rm = T)
+```
+
+
+Export data
+```{r}
+saveRDS(data_RT, file = "./data/data_RT.RDS") 
+saveRDS(data_responses, file = "./data/data_responses.RDS") 
+write.csv(data_responses, "./data/data_responses.csv")
+```
+
+
+
+
+<!-- Number of each gender -->
+<!-- ```{r} -->
+<!-- subj_data %>% -->
+<!--   count(gender) -->
+<!-- ``` -->
+
+
+```{r}
+```

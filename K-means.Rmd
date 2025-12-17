@@ -1,0 +1,118 @@
+---
+title: K-means clustering
+output: html_notebook
+---
+
+# Load packages
+```{r,message=FALSE, warning=FALSE}
+library(here)
+library(tidyverse)
+library(factoextra)
+```
+
+# Load data
+```{r}
+spectral <- read.csv("./data/spectral_analysis_filtered.csv") %>%
+  select(ParticipantID, AQ_Total, BAPQ_Total, IUS12_Total, BAPQ_Aloof, 
+         BAPQ_Pragmatic_Language, BAPQ_Rigid, AQ_Social_Skill, AQ_Attention_Switching,
+         AQ_Attention_to_Detail, AQ_Communication, AQ_Imagination) #%>%
+  #rename(ParticipantID = unique_ID)
+```
+
+Replace NA with zero and scale result
+```{r}
+df <- spectral %>%
+  replace(is.na(.), 0)
+  #mutate_all(~replace(., is.na(.), 0)) 
+
+new_df <- df %>%
+  select(-ParticipantID)
+
+ids <- df %>%
+  select(ParticipantID)
+
+df <- scale(new_df)
+#df <- df %>%
+#  mutate(across(c(AQ_Total, BAPQ_Total, IUS12_Total, BAPQ_Aloof, BAPQ_Pragmatic_Language, BAPQ_Rigid, AQ_Social_Skill, AQ_Attention_Switching, AQ_Attention_to_Detail, AQ_Communication, AQ_Imagination), scale))
+```
+
+# K-means clustering
+## Find optimal number of clusters
+```{r}
+
+fviz_nbclust(new_df, kmeans, method = "silhouette")
+```
+
+## Create clusters
+```{r}
+clusts <- kmeans(new_df, 2, nstart = 1000)
+fviz_cluster(clusts, data=new_df)
+
+clusters <- spectral %>%
+  mutate(Cluster = clusts$cluster) %>%
+  select(Cluster)
+
+results <- data.frame(ParticipantID = ids, Cluster = clusters)
+
+write.csv(results,"./data/participant_clusters.csv", row.names = TRUE)
+```
+
+
+How many in each cluster?
+```{r}
+
+counts <- clusters %>%
+  count(Cluster)
+
+print(counts)
+
+```
+
+
+Visualize differences between clusters
+```{r}
+spectral <- spectral %>%
+  mutate(Cluster = clusts$cluster)
+```
+
+
+```{r}
+spectral$Cluster <- factor(spectral$Cluster)
+
+# Create a function to generate box plots for each column
+create_box_plots <- function(df, cluster_col) {
+other_cols <- setdiff(names(df), cluster_col)
+plots <- list()
+ 
+for (col in other_cols) {
+  p <- ggplot(df, aes_string(x = cluster_col, y = col)) +
+    geom_boxplot() +
+    labs(title = paste(col, "by", cluster_col),
+         x = cluster_col,
+         y = col) +
+    stat_compare_means(method = "t.test") #different ggplot options for this line can customize it visually
+  plots[[col]] <- p
+  }
+ return(plots)
+}
+
+# Generate box plots
+box_plots <- create_box_plots(spectral, "Cluster")
+
+# Print the box plots
+for (plot in box_plots) {
+  print(plot)
+ }
+
+```
+
+#Run T-test to see if avg AQ_total per cluster is significantly different
+```{r}
+t_test_result <- t.test(AQ_Total ~ Cluster, data = spectral, var.equal = FALSE)
+
+print(t_test_result)
+```
+
+
+```{r}
+```
