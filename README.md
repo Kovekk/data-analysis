@@ -31,13 +31,11 @@ factoextra
 
 # Useful Websites
 
-{Make a list of websites that you found helpful in this project}
 * [w3schools for R](https://www.w3schools.com/r/)
 * [buildmer reference page](https://cran.r-project.org/web/packages/buildmer/refman/buildmer.html)
 * [emmeans reference page](https://cran.r-project.org/web/packages/emmeans/refman/emmeans.html)
 
 # Future Work
 
-{Make a list of things that you need to fix, improve, and add in the future.}
 * Make adjustments to the synthetic data so it could pass the preprocessing and better replicate human responses.
 * If I were to start over from scratch, more python with the pandas library would have been used for data gathering and preprocessing.
